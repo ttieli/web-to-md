@@ -6,7 +6,6 @@
     "wfmd": "./bin/wfmd-wrapper.js"
   },
   "scripts": {
-    "postinstall": "node scripts/postinstall.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {},
