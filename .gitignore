@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Internal documentation (local only)
+internal/
+
+# Build output
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test output
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.temp
+.wfmd_workspace_*/
+
+# Claude Code
+.claude/

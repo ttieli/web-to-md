@@ -1,0 +1,43 @@
+{
+  "name": "wfmd",
+  "version": "2.1.0",
+  "description": "Web to Markdown with OCR - Fetch web pages and extract text from images",
+  "bin": {
+    "wfmd": "./bin/wfmd-wrapper.js"
+  },
+  "scripts": {
+    "postinstall": "bash scripts/postinstall.sh",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "docxjs-cli": "github:ttieli/docxjs-cli",
+    "mineru-cli": "git+https://github.com/ttieli/mineru-cloud.git"
+  },
+  "files": [
+    "wfmd",
+    "bin",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "keywords": [
+    "markdown",
+    "ocr",
+    "web-scraping",
+    "wechat",
+    "xiaohongshu"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ttieli/web-to-md.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ttieli/web-to-md/issues"
+  },
+  "homepage": "https://github.com/ttieli/web-to-md#readme"
+}

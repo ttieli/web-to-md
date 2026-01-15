@@ -1,0 +1,588 @@
+#!/bin/bash
+# wfmd - Web to Markdown with OCR (智能路由版 v2.1)
+#
+# 安全清理机制：
+# 1. 创建统一的临时工作目录 .wfmd_workspace_{pid}_{timestamp}/
+# 2. 所有 mineru/docxjs 临时输出都放到这个目录
+# 3. 只删除已注册的文件（绝不删除未注册文件）
+# 4. 最后整个删除临时工作目录
+
+set -e
+
+VERSION="2.1.0"
+SCRIPT_NAME="wfmd"
+
+# ===== 配置 =====
+WFMD_KEEP_TEMP=false        # 是否保留临时文件
+TIMEOUT_SEC=120             # 单张图片 OCR 超时时间 (秒)
+LOG_FILE=""                 # 日志文件路径（运行时设置）
+WFMD_WORKSPACE=""           # 临时工作目录
+
+# ===== 颜色 =====
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# ===== 统一临时目录管理 =====
+
+# 全局变量：注册的临时文件列表
+declare -a WFMD_REGISTERED_FILES=()
+
+# 创建统一的临时工作目录
+create_workspace() {
+    local output_dir="$1"
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    WFMD_WORKSPACE="${output_dir}/.wfmd_workspace_$$_${timestamp}"
+    mkdir -p "$WFMD_WORKSPACE"
+
+    # 初始化日志
+    LOG_FILE="${WFMD_WORKSPACE}/cleanup.log"
+    echo "# WFMD Cleanup Log - $(date)" > "$LOG_FILE"
+    echo "# Version: $VERSION" >> "$LOG_FILE"
+    echo "# PID: $$" >> "$LOG_FILE"
+    echo "# Workspace: $WFMD_WORKSPACE" >> "$LOG_FILE"
+    echo "# Output Dir: $output_dir" >> "$LOG_FILE"
+    echo "" >> "$LOG_FILE"
+
+    log "INFO" "Workspace created: $WFMD_WORKSPACE"
+}
+
+# 记录日志
+log() {
+    local level="$1"
+    local msg="$2"
+    if [[ -n "$LOG_FILE" && -f "$LOG_FILE" ]]; then
+        local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+        echo "[$timestamp] [$level] $msg" >> "$LOG_FILE"
+    fi
+}
+
+# 注册临时文件（明确记录由脚本生成的文件）
+register_temp() {
+    local path="$1"
+    local source="$2"  # 来源说明
+
+    if [[ -z "$path" ]]; then
+        return
+    fi
+
+    # 获取绝对路径
+    local abs_path
+    if [[ -e "$path" ]]; then
+        abs_path=$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")
+    else
+        abs_path="$path"
+    fi
+
+    WFMD_REGISTERED_FILES+=("$abs_path")
+    log "REGISTER" "$abs_path (source: $source)"
+}
+
+# 检查文件是否已注册
+is_registered() {
+    local path="$1"
+    local abs_path
+
+    if [[ -e "$path" ]]; then
+        abs_path=$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")
+    else
+        abs_path="$path"
+    fi
+
+    for reg_file in "${WFMD_REGISTERED_FILES[@]}"; do
+        # 精确匹配或前缀匹配（用于目录内文件）
+        if [[ "$abs_path" == "$reg_file" ]] || [[ "$abs_path" == "$reg_file/"* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 安全检查：验证路径安全性
+is_safe_path() {
+    local path="$1"
+    local abs_path
+
+    if [[ -e "$path" ]]; then
+        abs_path=$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")
+    else
+        return 1
+    fi
+
+    local abs_cwd=$(pwd)
+
+    # 安全检查：不能是敏感目录
+    if [[ "$abs_path" == "/" ]] || \
+       [[ "$abs_path" == "$abs_cwd" ]] || \
+       [[ "$abs_path" == "$HOME" ]] || \
+       [[ "$abs_path" == "/tmp" ]] || \
+       [[ "$abs_path" == "/var" ]]; then
+        log "BLOCKED" "Sensitive path: $abs_path"
+        return 1
+    fi
+
+    # 路径深度检查（至少 4 级）
+    local depth=$(echo "$abs_path" | tr '/' '\n' | wc -l)
+    if [[ $depth -lt 4 ]]; then
+        log "BLOCKED" "Path too shallow (depth=$depth): $abs_path"
+        return 1
+    fi
+
+    return 0
+}
+
+# 安全清理：只删除已注册的文件
+safe_cleanup() {
+    if [[ "$WFMD_KEEP_TEMP" == "true" ]]; then
+        log "INFO" "Cleanup skipped: --keep flag is set"
+        echo -e "${YELLOW}>>> 临时文件已保留: $WFMD_WORKSPACE${NC}"
+        return 0
+    fi
+
+    local cleaned=0
+    local skipped=0
+
+    echo ""
+    echo -e "${BLUE}>>> 清理临时文件...${NC}"
+    log "INFO" "Starting cleanup (${#WFMD_REGISTERED_FILES[@]} registered files)"
+
+    # 只删除已注册且位于工作目录内的文件
+    for reg_file in "${WFMD_REGISTERED_FILES[@]}"; do
+        if [[ -e "$reg_file" ]]; then
+            # 绝对安全边界检查：路径必须以工作空间目录开头
+            if [[ "$reg_file" == "$WFMD_WORKSPACE"* ]]; then
+                # 安全检查（防止工作空间目录本身被设为敏感路径）
+                if is_safe_path "$reg_file"; then
+                    if [[ -d "$reg_file" ]]; then
+                        rm -rf "$reg_file" 2>/dev/null && {
+                            ((cleaned++))
+                            log "DELETED" "$reg_file"
+                            echo -e "  ${GREEN}已删除: $(basename "$reg_file")/${NC}"
+                        }
+                    else
+                        rm -f "$reg_file" 2>/dev/null && {
+                            ((cleaned++))
+                            log "DELETED" "$reg_file"
+                            echo -e "  ${GREEN}已删除: $(basename "$reg_file")${NC}"
+                        }
+                    fi
+                else
+                    log "SKIPPED" "Safety check failed: $reg_file"
+                fi
+            else
+                log "INFO" "Outside workspace, skip deletion: $reg_file"
+                ((skipped++))
+            fi
+        fi
+    done
+
+    # 清理临时工作目录
+    if [[ -n "$WFMD_WORKSPACE" && -d "$WFMD_WORKSPACE" ]]; then
+        # 先保存日志到输出目录（如果有内容）
+        if [[ -f "$LOG_FILE" ]]; then
+            local log_lines=$(wc -l < "$LOG_FILE" | tr -d ' ')
+            if [[ $log_lines -gt 10 ]]; then
+                local output_dir=$(dirname "$WFMD_WORKSPACE")
+                cp "$LOG_FILE" "${output_dir}/.wfmd_last_cleanup.log" 2>/dev/null || true
+            fi
+        fi
+
+        rm -rf "$WFMD_WORKSPACE" 2>/dev/null && {
+            ((cleaned++))
+            echo -e "  ${GREEN}已删除工作目录: $(basename "$WFMD_WORKSPACE")${NC}"
+        }
+    fi
+
+    log "INFO" "Cleanup complete: $cleaned deleted, $skipped skipped"
+
+    if [[ $cleaned -gt 0 ]]; then
+        echo -e "${GREEN}>>> 已清理 $cleaned 个临时文件/目录${NC}"
+    fi
+}
+
+# 异常退出时的清理
+cleanup_on_exit() {
+    if [[ "$WFMD_KEEP_TEMP" != "true" ]] && [[ -n "$WFMD_WORKSPACE" ]] && [[ -d "$WFMD_WORKSPACE" ]]; then
+        rm -rf "$WFMD_WORKSPACE" 2>/dev/null || true
+    fi
+}
+
+# 设置退出钩子
+trap cleanup_on_exit EXIT
+
+# ===== 工具函数 =====
+
+# 跨平台超时执行
+run_with_timeout() {
+    local timeout=$1
+    shift
+
+    if command -v perl >/dev/null 2>&1; then
+        perl -e 'alarm shift; exec @ARGV' "$timeout" "$@"
+        return $?
+    fi
+
+    "$@" &
+    local pid=$!
+    local count=0
+    while kill -0 $pid 2>/dev/null; do
+        if [[ $count -ge $timeout ]]; then
+            kill -9 $pid 2>/dev/null
+            return 124
+        fi
+        sleep 1
+        ((count++))
+    done
+    wait $pid
+    return $?
+}
+
+# ===== 核心处理逻辑 =====
+
+# 处理 Markdown 文件
+process_markdown() {
+    local md_file="$1"
+    local output_dir="$2"
+
+    # 提取图片 URL
+    local img_urls=()
+    while IFS= read -r line; do
+        img_urls+=("$line")
+    done < <(grep -oE '!\[[^]]*\]\((https?://[^)]+)\)' "$md_file" 2>/dev/null | grep -oE 'https?://[^)]+' || true)
+
+    if [[ ${#img_urls[@]} -eq 0 ]]; then
+        echo ""
+        echo -e "${GREEN}>>> 无图片 URL，直接输出${NC}"
+        echo "════════════════════════════════════════════════════════"
+        echo "Output: $md_file"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${BLUE}>>> 检测到 ${#img_urls[@]} 张图片${NC}"
+
+    # Step 3: 尝试直接 OCR 第一张图片（探测）
+    echo ""
+    echo -e "${BLUE}>>> 尝试直接 OCR 图片 URL (超时: ${TIMEOUT_SEC}s)...${NC}"
+    local test_url="${img_urls[0]}"
+    local test_output
+    local test_exit_code=0
+
+    # 在临时工作目录中创建测试目录
+    local test_ocr_dir="${WFMD_WORKSPACE}/test_ocr"
+    mkdir -p "$test_ocr_dir"
+
+    test_output=$(run_with_timeout "$TIMEOUT_SEC" mineru "$test_url" -o "$test_ocr_dir" 2>&1) || test_exit_code=$?
+
+    # 提取第一张图片的 OCR 输出目录
+    local first_ocr_dir=$(echo "$test_output" | grep -oE 'Output: .+' | tail -1 | sed 's/Output: //' | xargs)
+    if [[ -d "$first_ocr_dir" ]]; then
+        register_temp "$first_ocr_dir" "mineru-test-ocr"
+    fi
+
+    # 检查是否成功
+    if [[ $test_exit_code -eq 0 ]] && echo "$test_output" | grep -q "Completed"; then
+        echo -e "${GREEN}直接 OCR 成功，使用快速模式${NC}"
+
+        # 快速模式：批量 OCR 所有图片 URL
+        echo ""
+        echo -e "${BLUE}>>> 批量 OCR 所有图片...${NC}"
+
+        local ocr_results=""
+        local idx=1
+
+        # 处理第一张图片的结果
+        if [[ -d "$first_ocr_dir" ]]; then
+            local full_md=$(find "$first_ocr_dir" -name "full.md" -type f 2>/dev/null | head -1)
+            if [[ -f "$full_md" ]]; then
+                ocr_results+="\n\n### 图片 $idx OCR\n$(cat "$full_md")"
+            fi
+        fi
+        ((idx++))
+
+        # 处理剩余图片（全部放到临时工作目录）
+        if [[ ${#img_urls[@]} -gt 1 ]]; then
+            local remaining_count=$((${#img_urls[@]} - 1))
+            echo "正在处理剩余 $remaining_count 张图片..."
+
+            for ((i=1; i<${#img_urls[@]}; i++)); do
+                local url="${img_urls[i]}"
+                echo -n "  [$idx/${#img_urls[@]}] 处理图片... "
+
+                # 在临时工作目录中创建唯一目录
+                local unique_dir="${WFMD_WORKSPACE}/ocr_img_${idx}"
+                mkdir -p "$unique_dir"
+                register_temp "$unique_dir" "mineru-ocr-$idx"
+
+                local out
+                out=$(run_with_timeout "$TIMEOUT_SEC" mineru "$url" -o "$unique_dir" 2>&1) || true
+
+                # 查找 mineru 实际输出目录
+                local actual_dir=$(echo "$out" | grep -oE 'Output: .+' | tail -1 | sed 's/Output: //' | xargs)
+                if [[ -n "$actual_dir" && -d "$actual_dir" ]]; then
+                    register_temp "$actual_dir" "mineru-actual-$idx"
+                fi
+
+                local result_md=$(find "$unique_dir" -name "full.md" -type f 2>/dev/null | head -1)
+
+                if [[ -f "$result_md" ]]; then
+                    echo -e "${GREEN}完成${NC}"
+                    ocr_results+="\n\n### 图片 $idx OCR\n$(cat "$result_md")"
+                else
+                    echo -e "${YELLOW}失败或无内容${NC}"
+                fi
+                ((idx++))
+            done
+        fi
+
+        # 生成 OCR 版本（保存到用户输出目录，不是临时目录）
+        if [[ -n "$ocr_results" ]]; then
+            echo ""
+            echo -e "${BLUE}>>> 生成 OCR 增强版 Markdown${NC}"
+
+            local output_file="${md_file%.md}_OCR.md"
+            cp "$md_file" "$output_file"
+            echo -e "\n\n---\n\n## 图片 OCR 内容\n$ocr_results" >> "$output_file"
+            echo -e "${GREEN}已生成: $output_file${NC}"
+
+            # 清理临时文件
+            safe_cleanup
+
+            echo ""
+            echo "════════════════════════════════════════════════════════"
+            echo -e "${GREEN}完成 (快速模式 - 直接OCR图片URL)${NC}"
+            echo "Output: $output_file"
+        else
+            safe_cleanup
+            echo ""
+            echo "════════════════════════════════════════════════════════"
+            echo -e "${GREEN}完成 (快速模式)${NC}"
+            echo "Output: $md_file"
+        fi
+
+    else
+        # ===== 回退模式：docxjs → mineru =====
+        echo -e "${YELLOW}直接 OCR 失败，回退到 docxjs 整体解析方案${NC}"
+
+        if ! command -v docxjs &> /dev/null; then
+            echo -e "${RED}错误: docxjs 未安装，无法回退${NC}"
+            echo "Output: $md_file"
+            return 0
+        fi
+
+        echo ""
+        echo -e "${BLUE}>>> 回退方案 Step 1: docxjs 转换...${NC}"
+
+        # docxjs 输出到临时工作目录
+        local docx_output="${WFMD_WORKSPACE}/$(basename "${md_file%.md}").docx"
+
+        # 尝试生成 PDF（输出到临时目录）
+        docxjs "$md_file" -o "$docx_output" --pdf 2>/dev/null || true
+
+        # 查找生成的 PDF 文件
+        local convert_file="${docx_output%.docx}.pdf"
+        if [[ ! -f "$convert_file" ]]; then
+            convert_file="$docx_output"
+        fi
+
+        if [[ -f "$convert_file" ]]; then
+            register_temp "$convert_file" "docxjs-output"
+            echo -e "${GREEN}已生成: $convert_file${NC}"
+        else
+            # 如果指定输出失败，尝试默认输出
+            docxjs "$md_file" --pdf 2>/dev/null || true
+            local base_name="${md_file%.md}"
+            convert_file=$(ls -t "${base_name}"*.pdf 2>/dev/null | head -1)
+
+            if [[ ! -f "$convert_file" ]]; then
+                docxjs "$md_file" 2>/dev/null || true
+                convert_file=$(ls -t "${base_name}"*.docx 2>/dev/null | head -1)
+            fi
+
+            if [[ -f "$convert_file" ]]; then
+                register_temp "$convert_file" "docxjs-fallback"
+                echo -e "${GREEN}已生成: $convert_file${NC}"
+            else
+                echo -e "${RED}转换失败，输出原始 Markdown${NC}"
+                safe_cleanup
+                echo "Output: $md_file"
+                return 0
+            fi
+        fi
+
+        echo ""
+        echo -e "${BLUE}>>> 回退方案 Step 2: MinerU 整体 OCR...${NC}"
+
+        # mineru 输出到用户目录（这是最终结果）
+        local fallback_output
+        fallback_output=$(mineru "$convert_file" -o "$output_dir" 2>&1) || true
+
+        local fallback_dir=$(echo "$fallback_output" | grep -oE 'Output: .+' | tail -1 | sed 's/Output: //' | xargs)
+
+        # 注意：回退模式的 mineru 输出是最终结果，不注册为临时文件
+
+        # 清理临时文件（docxjs 中间文件在临时目录中，会被一起清理）
+        safe_cleanup
+
+        echo ""
+        echo "════════════════════════════════════════════════════════"
+        echo -e "${GREEN}完成 (回退模式 - docxjs → mineru 整体解析)${NC}"
+        if [[ -d "$fallback_dir" ]]; then
+            echo "Output: $fallback_dir/full.md"
+        fi
+    fi
+}
+
+# 主入口：处理单个 URL
+wfmd_url() {
+    local url="$1"
+    local output_dir="${2:-$(pwd)}"
+
+    # 创建统一临时工作目录
+    create_workspace "$output_dir"
+
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  wfmd - Web to Markdown with OCR (智能路由版) v$VERSION"
+    echo "═══════════════════════════════════════════════════════════"
+
+    # 依赖检查
+    if ! command -v wf &> /dev/null; then
+        echo -e "${RED}错误: wf (WebFetcher) 未安装${NC}"
+        exit 1
+    fi
+    if ! command -v mineru &> /dev/null; then
+        echo -e "${RED}错误: mineru 未安装${NC}"
+        exit 1
+    fi
+
+    # Step 1: WebFetcher 抓取网页（输出到用户目录）
+    echo ""
+    echo -e "${BLUE}>>> Step 1: WebFetcher 抓取网页${NC}"
+    local md_file=$(wf "$url" -o "$output_dir" 2>/dev/null | tail -1)
+
+    if [[ ! -f "$md_file" ]]; then
+        echo -e "${RED}wf 抓取失败${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}已生成: $md_file${NC}"
+
+    # Step 2+: 处理 Markdown
+    echo ""
+    echo -e "${BLUE}>>> Step 2: 分析图片内容${NC}"
+    process_markdown "$md_file" "$output_dir"
+}
+
+# 处理已有 Markdown 文件
+wfmd_file() {
+    local md_file="$1"
+    local output_dir="${2:-$(dirname "$md_file")}"
+
+    if [[ ! -f "$md_file" ]]; then
+        echo -e "${RED}文件不存在: $md_file${NC}"
+        exit 1
+    fi
+
+    # 创建统一临时工作目录
+    create_workspace "$output_dir"
+
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  wfmd - Web to Markdown with OCR (智能路由版) v$VERSION"
+    echo "  模式: 处理已有 Markdown 文件"
+    echo "═══════════════════════════════════════════════════════════"
+
+    echo ""
+    echo -e "${BLUE}>>> 输入文件: $md_file${NC}"
+
+    process_markdown "$md_file" "$output_dir"
+}
+
+# 显示帮助
+show_help() {
+    cat << 'EOF'
+wfmd - Web to Markdown with OCR (智能路由版) v2.1
+
+用法:
+  wfmd [选项] <url> [output_dir]    抓取网页并 OCR 图片
+  wfmd -f <file.md> [output_dir]    处理已有的 Markdown 文件
+  wfmd -h, --help                   显示帮助
+
+选项:
+  -k, --keep    保留所有临时文件（调试用）
+
+示例:
+  wfmd "https://example.com/article"
+  wfmd "http://xhslink.com/xxx" ~/Desktop/
+  wfmd -f ./article.md
+  wfmd -k "https://example.com"   # 保留临时文件
+
+安全清理机制 (v2.1):
+  1. 创建统一临时工作目录 .wfmd_workspace_{pid}_{timestamp}/
+  2. 所有 mineru/docxjs 临时输出都放到这个目录
+  3. 只删除已注册的文件（绝不删除未注册文件）
+  4. 最后整个删除临时工作目录
+
+  安全保证:
+  - 即使运行期间手动创建符合模式的文件也不会被误删
+  - 只有脚本通过 register_temp() 明确注册的文件才会被删除
+  - 所有临时文件隔离在独立工作目录中
+
+输出文件说明:
+  保留: {timestamp} - {title}.md     # wf 抓取的原始文件 (用户目录)
+  保留: {name}_OCR.md                 # OCR 增强版 (用户目录)
+  保留: {name}_MinerU_{ts}/          # 回退模式最终输出 (用户目录)
+  删除: .wfmd_workspace_*/            # 统一临时工作目录
+
+工作流程:
+  1. 创建临时工作目录
+  2. wf 抓取网页 → markdown (用户目录)
+  3. 检测 markdown 中的图片 URL
+  4. 尝试直接 OCR 图片 URL (快速模式，临时目录)
+  5. 若失败则回退到 docxjs → mineru (临时目录 + 用户目录)
+  6. 输出带 OCR 内容的 markdown (用户目录)
+  7. 删除整个临时工作目录
+
+依赖:
+  - wf (WebFetcher) - 必需
+  - mineru (MinerU CLI) - 必需
+  - docxjs - 可选（回退模式需要）
+EOF
+}
+
+# 主入口
+main() {
+    # 处理全局选项
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -k|--keep)
+                WFMD_KEEP_TEMP=true
+                shift
+                ;; 
+            *)
+                break
+                ;; 
+esac
+    done
+
+    case "${1:-}" in
+        -h|--help)
+            show_help
+            ;; 
+        -f|--file)
+            if [[ -z "${2:-}" ]]; then
+                echo -e "${RED}请指定 Markdown 文件${NC}"
+                exit 1
+            fi
+            wfmd_file "$2" "${3:-}"
+            ;; 
+        "")
+            show_help
+            ;; 
+        *)
+            wfmd_url "$1" "${2:-}"
+            ;; 
+esac
+}
+
+main "$@"
