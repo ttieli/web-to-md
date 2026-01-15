@@ -9,10 +9,7 @@
     "postinstall": "bash scripts/postinstall.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "dependencies": {
-    "docxjs-cli": "github:ttieli/docxjs-cli",
-    "mineru-cli": "git+https://github.com/ttieli/mineru-cloud.git"
-  },
+  "dependencies": {},
   "files": [
     "wfmd",
     "bin",

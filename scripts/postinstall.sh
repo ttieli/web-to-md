@@ -1,33 +1,75 @@
 #!/bin/bash
-# postinstall.sh - Install Python dependencies
+# postinstall.sh - Install all dependencies for wfmd
 
-echo "[wfmd] Checking Python dependencies..."
+echo "[wfmd] Installing dependencies..."
 
-# Check if wf command is already installed
+# Track installation status
+INSTALL_OK=true
+
+# ===== 1. Install webfetcher (wf) =====
 if command -v wf &> /dev/null; then
     echo "[wfmd] ✓ wf is already installed"
-    exit 0
+else
+    echo "[wfmd] Installing webfetcher (wf command)..."
+
+    if command -v pipx &> /dev/null; then
+        pipx install git+https://github.com/ttieli/web-fetcher.git 2>/dev/null && {
+            echo "[wfmd] ✓ webfetcher installed successfully"
+        } || {
+            echo "[wfmd] ⚠ webfetcher installation failed"
+            INSTALL_OK=false
+        }
+    elif command -v pip3 &> /dev/null; then
+        pip3 install --user git+https://github.com/ttieli/web-fetcher.git 2>/dev/null && {
+            echo "[wfmd] ✓ webfetcher installed successfully (via pip)"
+        } || {
+            echo "[wfmd] ⚠ webfetcher installation failed"
+            INSTALL_OK=false
+        }
+    else
+        echo "[wfmd] ⚠ Neither pipx nor pip3 found"
+        INSTALL_OK=false
+    fi
 fi
 
-echo "[wfmd] Installing webfetcher (wf command)..."
+# ===== 2. Install mineru-cli =====
+if command -v mineru &> /dev/null; then
+    echo "[wfmd] ✓ mineru is already installed"
+else
+    echo "[wfmd] Installing mineru-cli..."
 
-# Prefer pipx
-if command -v pipx &> /dev/null; then
-    pipx install git+https://github.com/ttieli/web-fetcher.git && {
-        echo "[wfmd] ✓ webfetcher installed successfully"
-        exit 0
+    npm install -g git+https://github.com/ttieli/mineru-cloud.git 2>/dev/null && {
+        echo "[wfmd] ✓ mineru-cli installed successfully"
+    } || {
+        echo "[wfmd] ⚠ mineru-cli installation failed"
+        INSTALL_OK=false
     }
 fi
 
-# Fallback: use pip
-if command -v pip3 &> /dev/null; then
-    pip3 install --user git+https://github.com/ttieli/web-fetcher.git && {
-        echo "[wfmd] ✓ webfetcher installed successfully (via pip)"
-        exit 0
+# ===== 3. Install docxjs-cli =====
+if command -v docxjs &> /dev/null; then
+    echo "[wfmd] ✓ docxjs is already installed"
+else
+    echo "[wfmd] Installing docxjs-cli..."
+
+    npm install -g github:ttieli/docxjs-cli 2>/dev/null && {
+        echo "[wfmd] ✓ docxjs-cli installed successfully"
+    } || {
+        echo "[wfmd] ⚠ docxjs-cli installation failed"
+        INSTALL_OK=false
     }
 fi
 
-# Installation failed, provide manual instructions
-echo "[wfmd] ⚠ webfetcher auto-install failed"
-echo "[wfmd] Please run manually: pipx install git+https://github.com/ttieli/web-fetcher.git"
-exit 0  # Don't block npm install
+# ===== Summary =====
+echo ""
+if [ "$INSTALL_OK" = true ]; then
+    echo "[wfmd] ✓ All dependencies installed successfully"
+else
+    echo "[wfmd] ⚠ Some dependencies failed to install. Please install manually:"
+    command -v wf &> /dev/null || echo "  pipx install git+https://github.com/ttieli/web-fetcher.git"
+    command -v mineru &> /dev/null || echo "  npm install -g git+https://github.com/ttieli/mineru-cloud.git"
+    command -v docxjs &> /dev/null || echo "  npm install -g github:ttieli/docxjs-cli"
+fi
+
+# Don't block npm install
+exit 0
