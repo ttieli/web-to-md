@@ -31,5 +31,11 @@ coverage/
 *.temp
 .wfmd_workspace_*/
 
+# WFMD output files (test artifacts)
+*_MinerU_*/
+*_OCR.md
+*_macocr_*.md
+.wfmd_last_cleanup.log
+
 # Claude Code
 .claude/

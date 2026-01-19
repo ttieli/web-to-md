@@ -9,7 +9,7 @@
 
 set -e
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 SCRIPT_NAME="wfmd"
 
 # ===== 配置 =====
@@ -17,6 +17,7 @@ WFMD_KEEP_TEMP=false        # 是否保留临时文件
 TIMEOUT_SEC=120             # 单张图片 OCR 超时时间 (秒)
 LOG_FILE=""                 # 日志文件路径（运行时设置）
 WFMD_WORKSPACE=""           # 临时工作目录
+OCR_ENGINE="${WFMD_OCR_ENGINE:-macocr}"  # OCR 引擎: macocr(默认) 或 mineru(高级)
 
 # ===== 颜色 =====
 RED='\033[0;31m'
@@ -262,6 +263,7 @@ process_markdown() {
 
     echo ""
     echo -e "${BLUE}>>> 检测到 ${#img_urls[@]} 张图片${NC}"
+    echo -e "${BLUE}>>> 使用 OCR 引擎: ${OCR_ENGINE}${NC}"
 
     # Step 3: 尝试直接 OCR 第一张图片（探测）
     echo ""
@@ -269,21 +271,45 @@ process_markdown() {
     local test_url="${img_urls[0]}"
     local test_output
     local test_exit_code=0
+    local first_ocr_result=""
 
     # 在临时工作目录中创建测试目录
     local test_ocr_dir="${WFMD_WORKSPACE}/test_ocr"
     mkdir -p "$test_ocr_dir"
 
-    test_output=$(run_with_timeout "$TIMEOUT_SEC" mineru "$test_url" -o "$test_ocr_dir" 2>&1) || test_exit_code=$?
+    if [[ "$OCR_ENGINE" == "macocr" ]]; then
+        # 使用 macocr：直接输出到 stdout
+        local test_ocr_file="${test_ocr_dir}/test.md"
+        test_output=$(run_with_timeout "$TIMEOUT_SEC" macocr "$test_url" -o "$test_ocr_file" 2>&1) || test_exit_code=$?
 
-    # 提取第一张图片的 OCR 输出目录
-    local first_ocr_dir=$(echo "$test_output" | grep -oE 'Output: .+' | tail -1 | sed 's/Output: //' | xargs)
-    if [[ -d "$first_ocr_dir" ]]; then
-        register_temp "$first_ocr_dir" "mineru-test-ocr"
+        if [[ $test_exit_code -eq 0 ]] && [[ -f "$test_ocr_file" ]]; then
+            first_ocr_result=$(cat "$test_ocr_file")
+            register_temp "$test_ocr_file" "macocr-test-ocr"
+        fi
+    else
+        # 使用 mineru
+        test_output=$(run_with_timeout "$TIMEOUT_SEC" mineru "$test_url" -o "$test_ocr_dir" 2>&1) || test_exit_code=$?
+
+        # 提取第一张图片的 OCR 输出目录
+        local first_ocr_dir=$(echo "$test_output" | grep -oE 'Output: .+' | tail -1 | sed 's/Output: //' | xargs)
+        if [[ -d "$first_ocr_dir" ]]; then
+            register_temp "$first_ocr_dir" "mineru-test-ocr"
+            local full_md=$(find "$first_ocr_dir" -name "full.md" -type f 2>/dev/null | head -1)
+            if [[ -f "$full_md" ]]; then
+                first_ocr_result=$(cat "$full_md")
+            fi
+        fi
     fi
 
     # 检查是否成功
-    if [[ $test_exit_code -eq 0 ]] && echo "$test_output" | grep -q "Completed"; then
+    local ocr_success=false
+    if [[ "$OCR_ENGINE" == "macocr" ]]; then
+        [[ $test_exit_code -eq 0 ]] && [[ -n "$first_ocr_result" ]] && ocr_success=true
+    else
+        [[ $test_exit_code -eq 0 ]] && echo "$test_output" | grep -q "Completed" && ocr_success=true
+    fi
+
+    if [[ "$ocr_success" == "true" ]]; then
         echo -e "${GREEN}直接 OCR 成功，使用快速模式${NC}"
 
         # 快速模式：批量 OCR 所有图片 URL
@@ -294,11 +320,8 @@ process_markdown() {
         local idx=1
 
         # 处理第一张图片的结果
-        if [[ -d "$first_ocr_dir" ]]; then
-            local full_md=$(find "$first_ocr_dir" -name "full.md" -type f 2>/dev/null | head -1)
-            if [[ -f "$full_md" ]]; then
-                ocr_results+="\n\n### 图片 $idx OCR\n$(cat "$full_md")"
-            fi
+        if [[ -n "$first_ocr_result" ]]; then
+            ocr_results+="\n\n### 图片 $idx OCR\n$first_ocr_result"
         fi
         ((idx++))
 
@@ -311,25 +334,42 @@ process_markdown() {
                 local url="${img_urls[i]}"
                 echo -n "  [$idx/${#img_urls[@]}] 处理图片... "
 
-                # 在临时工作目录中创建唯一目录
-                local unique_dir="${WFMD_WORKSPACE}/ocr_img_${idx}"
-                mkdir -p "$unique_dir"
-                register_temp "$unique_dir" "mineru-ocr-$idx"
+                local ocr_content=""
 
-                local out
-                out=$(run_with_timeout "$TIMEOUT_SEC" mineru "$url" -o "$unique_dir" 2>&1) || true
+                if [[ "$OCR_ENGINE" == "macocr" ]]; then
+                    # 使用 macocr
+                    local ocr_file="${WFMD_WORKSPACE}/ocr_img_${idx}.md"
+                    local out
+                    out=$(run_with_timeout "$TIMEOUT_SEC" macocr "$url" -o "$ocr_file" 2>&1) || true
+                    register_temp "$ocr_file" "macocr-ocr-$idx"
 
-                # 查找 mineru 实际输出目录
-                local actual_dir=$(echo "$out" | grep -oE 'Output: .+' | tail -1 | sed 's/Output: //' | xargs)
-                if [[ -n "$actual_dir" && -d "$actual_dir" ]]; then
-                    register_temp "$actual_dir" "mineru-actual-$idx"
+                    if [[ -f "$ocr_file" ]]; then
+                        ocr_content=$(cat "$ocr_file")
+                    fi
+                else
+                    # 使用 mineru
+                    local unique_dir="${WFMD_WORKSPACE}/ocr_img_${idx}"
+                    mkdir -p "$unique_dir"
+                    register_temp "$unique_dir" "mineru-ocr-$idx"
+
+                    local out
+                    out=$(run_with_timeout "$TIMEOUT_SEC" mineru "$url" -o "$unique_dir" 2>&1) || true
+
+                    # 查找 mineru 实际输出目录
+                    local actual_dir=$(echo "$out" | grep -oE 'Output: .+' | tail -1 | sed 's/Output: //' | xargs)
+                    if [[ -n "$actual_dir" && -d "$actual_dir" ]]; then
+                        register_temp "$actual_dir" "mineru-actual-$idx"
+                    fi
+
+                    local result_md=$(find "$unique_dir" -name "full.md" -type f 2>/dev/null | head -1)
+                    if [[ -f "$result_md" ]]; then
+                        ocr_content=$(cat "$result_md")
+                    fi
                 fi
 
-                local result_md=$(find "$unique_dir" -name "full.md" -type f 2>/dev/null | head -1)
-
-                if [[ -f "$result_md" ]]; then
+                if [[ -n "$ocr_content" ]]; then
                     echo -e "${GREEN}完成${NC}"
-                    ocr_results+="\n\n### 图片 $idx OCR\n$(cat "$result_md")"
+                    ocr_results+="\n\n### 图片 $idx OCR\n$ocr_content"
                 else
                     echo -e "${YELLOW}失败或无内容${NC}"
                 fi
@@ -452,9 +492,19 @@ wfmd_url() {
         echo -e "${RED}错误: wf (WebFetcher) 未安装${NC}"
         exit 1
     fi
-    if ! command -v mineru &> /dev/null; then
-        echo -e "${RED}错误: mineru 未安装${NC}"
-        exit 1
+
+    # 根据 OCR 引擎检查依赖
+    if [[ "$OCR_ENGINE" == "macocr" ]]; then
+        if ! command -v macocr &> /dev/null; then
+            echo -e "${RED}错误: macocr 未安装${NC}"
+            echo -e "${YELLOW}请安装: brew install macocr 或参考 https://github.com/...${NC}"
+            exit 1
+        fi
+    else
+        if ! command -v mineru &> /dev/null; then
+            echo -e "${RED}错误: mineru 未安装${NC}"
+            exit 1
+        fi
     fi
 
     # Step 1: WebFetcher 抓取网页（输出到用户目录）
@@ -501,7 +551,7 @@ wfmd_file() {
 # 显示帮助
 show_help() {
     cat << 'EOF'
-wfmd - Web to Markdown with OCR (智能路由版) v2.1
+wfmd - Web to Markdown with OCR (智能路由版) v2.2
 
 用法:
   wfmd [选项] <url> [output_dir]    抓取网页并 OCR 图片
@@ -510,23 +560,26 @@ wfmd - Web to Markdown with OCR (智能路由版) v2.1
 
 选项:
   -k, --keep    保留所有临时文件（调试用）
+  --mineru      使用 MinerU 云端 OCR（高级模式，支持公式/表格识别）
+
+OCR 引擎:
+  默认使用 macocr (macOS 原生 OCR)，速度快、无需网络
+  使用 --mineru 切换到 MinerU 云端 OCR，支持更复杂的文档解析
+
+  也可通过环境变量设置: WFMD_OCR_ENGINE=mineru wfmd <url>
 
 示例:
-  wfmd "https://example.com/article"
+  wfmd "https://example.com/article"              # 使用 macocr (默认)
+  wfmd --mineru "https://example.com/article"     # 使用 MinerU
   wfmd "http://xhslink.com/xxx" ~/Desktop/
   wfmd -f ./article.md
-  wfmd -k "https://example.com"   # 保留临时文件
+  wfmd -k "https://example.com"                   # 保留临时文件
 
-安全清理机制 (v2.1):
+安全清理机制:
   1. 创建统一临时工作目录 .wfmd_workspace_{pid}_{timestamp}/
-  2. 所有 mineru/docxjs 临时输出都放到这个目录
+  2. 所有 OCR 临时输出都放到这个目录
   3. 只删除已注册的文件（绝不删除未注册文件）
   4. 最后整个删除临时工作目录
-
-  安全保证:
-  - 即使运行期间手动创建符合模式的文件也不会被误删
-  - 只有脚本通过 register_temp() 明确注册的文件才会被删除
-  - 所有临时文件隔离在独立工作目录中
 
 输出文件说明:
   保留: {timestamp} - {title}.md     # wf 抓取的原始文件 (用户目录)
@@ -538,14 +591,15 @@ wfmd - Web to Markdown with OCR (智能路由版) v2.1
   1. 创建临时工作目录
   2. wf 抓取网页 → markdown (用户目录)
   3. 检测 markdown 中的图片 URL
-  4. 尝试直接 OCR 图片 URL (快速模式，临时目录)
+  4. 使用 macocr/mineru OCR 图片 (快速模式，临时目录)
   5. 若失败则回退到 docxjs → mineru (临时目录 + 用户目录)
   6. 输出带 OCR 内容的 markdown (用户目录)
   7. 删除整个临时工作目录
 
 依赖:
   - wf (WebFetcher) - 必需
-  - mineru (MinerU CLI) - 必需
+  - macocr - 默认 OCR 引擎（macOS 原生）
+  - mineru (MinerU CLI) - 可选（--mineru 模式或回退模式）
   - docxjs - 可选（回退模式需要）
 EOF
 }
@@ -558,11 +612,15 @@ main() {
             -k|--keep)
                 WFMD_KEEP_TEMP=true
                 shift
-                ;; 
+                ;;
+            --mineru)
+                OCR_ENGINE="mineru"
+                shift
+                ;;
             *)
                 break
-                ;; 
-esac
+                ;;
+        esac
     done
 
     case "${1:-}" in

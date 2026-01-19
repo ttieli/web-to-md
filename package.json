@@ -1,6 +1,6 @@
 {
   "name": "wfmd",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Web to Markdown with OCR - Fetch web pages and extract text from images",
   "bin": {
     "wfmd": "./bin/wfmd-wrapper.js"
