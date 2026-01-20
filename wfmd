@@ -278,13 +278,18 @@ process_markdown() {
     mkdir -p "$test_ocr_dir"
 
     if [[ "$OCR_ENGINE" == "macocr" ]]; then
-        # 使用 macocr：直接输出到 stdout
+        # 使用 macocr：直接输出到文件
         local test_ocr_file="${test_ocr_dir}/test.md"
         test_output=$(run_with_timeout "$TIMEOUT_SEC" macocr "$test_url" -o "$test_ocr_file" 2>&1) || test_exit_code=$?
 
-        if [[ $test_exit_code -eq 0 ]] && [[ -f "$test_ocr_file" ]]; then
+        if [[ $test_exit_code -eq 0 ]] && [[ -f "$test_ocr_file" ]] && [[ -s "$test_ocr_file" ]]; then
             first_ocr_result=$(cat "$test_ocr_file")
             register_temp "$test_ocr_file" "macocr-test-ocr"
+        else
+            # 显示 macocr 失败原因
+            if echo "$test_output" | grep -qi "error\|fail\|404"; then
+                echo -e "${YELLOW}macocr 错误: $(echo "$test_output" | grep -i "error\|fail\|404" | head -1)${NC}"
+            fi
         fi
     else
         # 使用 mineru
@@ -455,22 +460,37 @@ process_markdown() {
         echo ""
         echo -e "${BLUE}>>> 回退方案 Step 2: MinerU 整体 OCR...${NC}"
 
-        # mineru 输出到用户目录（这是最终结果）
+        # mineru 输出到临时目录，避免污染用户目录
+        local mineru_temp_dir="${WFMD_WORKSPACE}/mineru_output"
+        mkdir -p "$mineru_temp_dir"
+        register_temp "$mineru_temp_dir" "mineru-fallback"
+
         local fallback_output
-        fallback_output=$(mineru "$convert_file" -o "$output_dir" 2>&1) || true
+        fallback_output=$(mineru "$convert_file" -o "$mineru_temp_dir" 2>&1) || true
 
         local fallback_dir=$(echo "$fallback_output" | grep -oE 'Output: .+' | tail -1 | sed 's/Output: //' | xargs)
 
-        # 注意：回退模式的 mineru 输出是最终结果，不注册为临时文件
+        # 找到 full.md 并复制到用户目录，使用原始文件名
+        local final_output=""
+        local full_md_path=$(find "$mineru_temp_dir" -name "full.md" -type f 2>/dev/null | head -1)
+        if [[ -f "$full_md_path" ]]; then
+            # 使用原始 markdown 的文件名（去掉 .md 后缀加上 _OCR.md）
+            local base_name=$(basename "${md_file%.md}")
+            final_output="${output_dir}/${base_name}_OCR.md"
+            cp "$full_md_path" "$final_output"
+            echo -e "${GREEN}已生成: $final_output${NC}"
+        fi
 
-        # 清理临时文件（docxjs 中间文件在临时目录中，会被一起清理）
+        # 清理临时文件（mineru 输出现在在临时目录中，会被一起清理）
         safe_cleanup
 
         echo ""
         echo "════════════════════════════════════════════════════════"
         echo -e "${GREEN}完成 (回退模式 - docxjs → mineru 整体解析)${NC}"
-        if [[ -d "$fallback_dir" ]]; then
-            echo "Output: $fallback_dir/full.md"
+        if [[ -n "$final_output" && -f "$final_output" ]]; then
+            echo "Output: $final_output"
+        else
+            echo "Output: $md_file"
         fi
     fi
 }
