@@ -19,6 +19,65 @@ Fetch web pages and automatically extract text from images using OCR.
 - Safe cleanup mechanism for temporary files
 - Default output to `./output/` directory
 
+### API Specification (Stable Interface)
+
+This section defines the stable interface contract. Future updates will maintain backward compatibility with this specification.
+
+#### Command Line Interface
+
+```
+wfmd [OPTIONS] <URL> [OUTPUT_DIR]
+wfmd -f <FILE> [OUTPUT_DIR]
+```
+
+#### Input
+
+| Mode | Input | Description |
+|------|-------|-------------|
+| URL mode | `<URL>` | Any valid HTTP/HTTPS URL |
+| File mode | `-f <FILE>` | Local Markdown file path |
+
+#### Output
+
+| File | Pattern | Description |
+|------|---------|-------------|
+| Original | `{YYYY-MM-DD-HHmmss} - {title}.md` | Raw fetched content |
+| OCR Enhanced | `{YYYY-MM-DD-HHmmss} - {title}_OCR.md` | With OCR content appended |
+
+**Default output directory:** `./output/` (auto-created)
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-k, --keep` | Keep temporary files | `false` |
+| `--mineru` | Use MinerU Cloud OCR | `false` |
+| `-f, --file` | Process local file | - |
+| `-h, --help` | Show help | - |
+
+#### Environment Variables
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `WFMD_OCR_ENGINE` | `macocr`, `mineru` | `macocr` | OCR engine selection |
+| `WFMD_KEEP_TEMP` | `true`, `false` | `false` | Keep temporary files |
+
+#### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Error (dependency missing, fetch failed, etc.) |
+
+#### stdout
+
+The last line of stdout contains the output file path:
+```
+Output: /path/to/output/file.md
+```
+
+---
+
 ### Installation
 
 ```bash
@@ -70,15 +129,6 @@ wfmd -f ./article.md
 wfmd -f ./article.md ~/output/
 ```
 
-#### Options
-
-```
--k, --keep    Keep temporary files (for debugging)
---mineru      Use MinerU Cloud OCR (supports formulas/tables)
--f, --file    Process an existing Markdown file
--h, --help    Show help
-```
-
 ### How It Works
 
 1. **Fetch**: Use WebFetcher to fetch the web page and convert to Markdown
@@ -86,15 +136,6 @@ wfmd -f ./article.md ~/output/
 3. **OCR (Fast Mode)**: Try to OCR image URLs directly using macocr/mineru
 4. **OCR (Fallback)**: If direct OCR fails, convert Markdown to PDF via docxjs, then OCR the entire document
 5. **Output**: Generate an enhanced Markdown file with OCR content appended
-
-### Output Files
-
-| File | Description |
-|------|-------------|
-| `{timestamp} - {title}.md` | Original fetched content |
-| `{name}_OCR.md` | Enhanced version with OCR content |
-
-Default output directory: `./output/`
 
 ### Dependencies
 
@@ -132,6 +173,65 @@ MIT
 - 支持微信公众号、小红书等中文平台
 - 安全的临时文件清理机制
 - 默认输出到 `./output/` 目录
+
+### 接口规范（稳定契约）
+
+本节定义稳定的接口契约。未来更新将保持与此规范的向后兼容性。
+
+#### 命令行接口
+
+```
+wfmd [选项] <URL> [输出目录]
+wfmd -f <文件> [输出目录]
+```
+
+#### 输入
+
+| 模式 | 输入 | 说明 |
+|------|------|------|
+| URL 模式 | `<URL>` | 任意有效的 HTTP/HTTPS URL |
+| 文件模式 | `-f <文件>` | 本地 Markdown 文件路径 |
+
+#### 输出
+
+| 文件 | 命名规则 | 说明 |
+|------|----------|------|
+| 原始文件 | `{YYYY-MM-DD-HHmmss} - {标题}.md` | 抓取的原始内容 |
+| OCR 增强版 | `{YYYY-MM-DD-HHmmss} - {标题}_OCR.md` | 附加 OCR 内容 |
+
+**默认输出目录：** `./output/`（自动创建）
+
+#### 选项
+
+| 选项 | 说明 | 默认值 |
+|------|------|--------|
+| `-k, --keep` | 保留临时文件 | `false` |
+| `--mineru` | 使用 MinerU 云端 OCR | `false` |
+| `-f, --file` | 处理本地文件 | - |
+| `-h, --help` | 显示帮助 | - |
+
+#### 环境变量
+
+| 变量 | 可选值 | 默认值 | 说明 |
+|------|--------|--------|------|
+| `WFMD_OCR_ENGINE` | `macocr`, `mineru` | `macocr` | OCR 引擎选择 |
+| `WFMD_KEEP_TEMP` | `true`, `false` | `false` | 保留临时文件 |
+
+#### 退出码
+
+| 代码 | 含义 |
+|------|------|
+| `0` | 成功 |
+| `1` | 错误（依赖缺失、抓取失败等） |
+
+#### 标准输出
+
+stdout 的最后一行包含输出文件路径：
+```
+Output: /path/to/output/file.md
+```
+
+---
 
 ### 安装
 
@@ -184,15 +284,6 @@ wfmd -f ./article.md
 wfmd -f ./article.md ~/output/
 ```
 
-#### 命令选项
-
-```
--k, --keep    保留临时文件（用于调试）
---mineru      使用 MinerU 云端 OCR（支持公式/表格识别）
--f, --file    处理已有的 Markdown 文件
--h, --help    显示帮助
-```
-
 ### 工作原理
 
 1. **抓取**：使用 WebFetcher 抓取网页并转换为 Markdown
@@ -200,15 +291,6 @@ wfmd -f ./article.md ~/output/
 3. **OCR（快速模式）**：尝试使用 macocr/mineru 直接 OCR 图片 URL
 4. **OCR（回退模式）**：如果直接 OCR 失败，通过 docxjs 将 Markdown 转换为 PDF，然后对整个文档进行 OCR
 5. **输出**：生成带有 OCR 内容的增强版 Markdown 文件
-
-### 输出文件
-
-| 文件 | 说明 |
-|------|------|
-| `{timestamp} - {title}.md` | 原始抓取内容 |
-| `{name}_OCR.md` | 带 OCR 内容的增强版 |
-
-默认输出目录：`./output/`
 
 ### 依赖项
 
